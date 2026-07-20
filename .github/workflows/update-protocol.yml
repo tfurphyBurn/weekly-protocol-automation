@@ -1,0 +1,72 @@
+name: Update Weekly Protocol
+
+on:
+  schedule:
+    # GitHub schedules use UTC.
+    # Running at both times handles Eastern Standard and Daylight Time.
+    - cron: "0 4 * * 0"
+    - cron: "0 5 * * 0"
+
+  # Allows you to test it manually.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-protocol:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Confirm Eastern midnight
+        if: github.event_name == 'schedule'
+        run: |
+          EASTERN_DAY=$(TZ=America/New_York date +%u)
+          EASTERN_HOUR=$(TZ=America/New_York date +%H)
+
+          echo "Eastern day: $EASTERN_DAY"
+          echo "Eastern hour: $EASTERN_HOUR"
+
+          if [ "$EASTERN_DAY" != "7" ] || [ "$EASTERN_HOUR" != "00" ]; then
+            echo "This is not Sunday at midnight Eastern."
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download latest protocol
+        run: |
+          curl --location \
+            --fail \
+            --retry 3 \
+            --output weekly-protocol-new.jpeg \
+            "https://burnbootcamp.widen.net/content/jkjvgcxsin/jpeg/Screencloud%20Protocol.jpeg?position=c&color=ffffffff&quality=80&u=nby9s5"
+
+      - name: Validate downloaded image
+        run: |
+          FILE_TYPE=$(file --brief --mime-type weekly-protocol-new.jpeg)
+          echo "Downloaded file type: $FILE_TYPE"
+
+          if [[ "$FILE_TYPE" != image/* ]]; then
+            echo "Downloaded file is not an image."
+            exit 1
+          fi
+
+      - name: Replace protocol image
+        run: |
+          mv weekly-protocol-new.jpeg weekly-protocol.jpeg
+
+      - name: Commit updated image
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add weekly-protocol.jpeg
+
+          if git diff --cached --quiet; then
+            echo "The protocol image has not changed."
+          else
+            git commit -m "Update weekly protocol image"
+            git push
+          fi
