@@ -1,219 +1,81 @@
-name: Update Weekly Protocol
+name: Test Native OptiSigns Image Upload
 
 on:
   workflow_dispatch:
 
-  # GitHub schedules use UTC.
-  # We run at both possible Eastern midnight times and use a timezone
-  # check below so only the correct run proceeds during DST changes.
-  schedule:
-    - cron: "0 4 * * 0"
-    - cron: "0 5 * * 0"
-
-permissions:
-  contents: write
-
-concurrency:
-  group: weekly-protocol-update
-  cancel-in-progress: false
-
 jobs:
-  update-protocol:
+  test-upload:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check Sunday midnight Eastern
-        id: timecheck
-        shell: bash
-        run: |
-          EASTERN_DAY="$(TZ=America/New_York date +%u)"
-          EASTERN_HOUR="$(TZ=America/New_York date +%H)"
-
-          echo "Eastern day: $EASTERN_DAY"
-          echo "Eastern hour: $EASTERN_HOUR"
-
-          # Allow manual workflow runs at any time.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$EASTERN_DAY" == "7" && "$EASTERN_HOUR" == "00" ]]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out repository
-        if: steps.timecheck.outputs.should_run == 'true'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Download current protocol image
-        if: steps.timecheck.outputs.should_run == 'true'
-        shell: bash
         run: |
-          set -euo pipefail
-
-          SOURCE_URL='https://burnbootcamp.widen.net/content/jkjvgcxsin/jpeg/Screencloud%20Protocol.jpeg?position=c&color=ffffffff&quality=80&u=nby9s5'
-
           curl \
             --fail \
             --location \
             --retry 3 \
-            --retry-delay 5 \
-            --connect-timeout 30 \
-            --max-time 120 \
             --user-agent "Mozilla/5.0 WeeklyProtocolAutomation/1.0" \
-            "$SOURCE_URL" \
-            --output weekly-protocol-new.jpeg
+            "https://burnbootcamp.widen.net/content/jkjvgcxsin/jpeg/Screencloud%20Protocol.jpeg?position=c&color=ffffffff&quality=80&u=nby9s5" \
+            --output weekly-protocol.jpeg
 
-          if [[ ! -s weekly-protocol-new.jpeg ]]; then
-            echo "Downloaded image is empty."
-            exit 1
-          fi
+          file weekly-protocol.jpeg
+          test -s weekly-protocol.jpeg
 
-          FILE_TYPE="$(file --brief --mime-type weekly-protocol-new.jpeg)"
-          echo "Downloaded MIME type: $FILE_TYPE"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-          case "$FILE_TYPE" in
-            image/jpeg|image/png|image/webp)
-              ;;
-            *)
-              echo "The downloaded file is not a supported image."
-              exit 1
-              ;;
-          esac
+      - name: Install OptiSigns SDK
+        run: npm install @optisigns/optisigns
 
-          mv weekly-protocol-new.jpeg weekly-protocol.jpeg
-
-      - name: Detect image change
-        if: steps.timecheck.outputs.should_run == 'true'
-        id: changes
-        shell: bash
-        run: |
-          if git diff --quiet -- weekly-protocol.jpeg; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "The protocol image has not changed."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "A new protocol image was downloaded."
-          fi
-
-      - name: Commit updated image
-        if: >
-          steps.timecheck.outputs.should_run == 'true' &&
-          steps.changes.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add weekly-protocol.jpeg
-          git commit -m "Update weekly protocol image"
-          git push
-
-      - name: Get published image URL
-        if: steps.timecheck.outputs.should_run == 'true'
-        id: image
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Pull the final commit SHA after any image commit.
-          git pull --ff-only
-          COMMIT_SHA="$(git rev-parse HEAD)"
-
-          IMAGE_URL="https://raw.githubusercontent.com/tfurphyBurn/weekly-protocol-automation/${COMMIT_SHA}/weekly-protocol.jpeg"
-
-          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
-          echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
-          echo "Published image: $IMAGE_URL"
-
-      - name: Update OptiSigns asset through GraphQL
-        if: steps.timecheck.outputs.should_run == 'true'
+      - name: Upload native image asset
         env:
           OPTISIGNS_API_KEY: ${{ secrets.OPTISIGNS_API_KEY }}
-          OPTISIGNS_ASSET_ID: ${{ secrets.OPTISIGNS_ASSET_ID }}
-          IMAGE_URL: ${{ steps.image.outputs.image_url }}
-        shell: bash
         run: |
-          set -euo pipefail
+          cat > upload.cjs <<'EOF'
+          const { OptiSigns } = require("@optisigns/optisigns");
 
-          if [[ -z "${OPTISIGNS_API_KEY:-}" ]]; then
-            echo "OPTISIGNS_API_KEY is missing."
-            exit 1
-          fi
+          const token = process.env.OPTISIGNS_API_KEY;
 
-          if [[ -z "${OPTISIGNS_ASSET_ID:-}" ]]; then
-            echo "OPTISIGNS_ASSET_ID is missing."
-            exit 1
-          fi
+          if (!token) {
+            throw new Error("OPTISIGNS_API_KEY secret is missing");
+          }
 
-          jq -n \
-            --arg assetId "$OPTISIGNS_ASSET_ID" \
-            --arg imageUrl "$IMAGE_URL" \
-            '{
-              query: "
-                mutation SaveWeeklyProtocolAsset(
-                  $payload: AssetInput!,
-                  $teamId: String
-                ) {
-                  saveAsset(
-                    payload: $payload,
-                    teamId: $teamId
-                  ) {
-                    _id
-                    originalFileName
-                    webLink
-                    webType
-                    fileType
-                  }
-                }
-              ",
-              variables: {
-                teamId: "1",
-                payload: {
-                  _id: $assetId,
-                  originalFileName: "Weekly Protocol Automation",
-                  webLink: $imageUrl,
-                  webType: "website",
-                  fileType: "web"
-                }
+          const client = new OptiSigns({
+            token: token
+          });
+
+          async function main() {
+            try {
+              const result = await client.assets.uploadFileAsset(
+                "./weekly-protocol.jpeg",
+                "1"
+              );
+
+              console.log("UPLOAD SUCCESSFUL");
+              console.log(JSON.stringify(result, null, 2));
+            } catch (error) {
+              console.error("UPLOAD FAILED");
+              console.error("Message:", error?.message);
+
+              if (error?.response?.status) {
+                console.error("HTTP status:", error.response.status);
               }
-            }' > graphql-request.json
 
-          HTTP_STATUS="$(
-            curl \
-              --silent \
-              --show-error \
-              --output graphql-response.json \
-              --write-out "%{http_code}" \
-              --request POST \
-              --header "Authorization: Bearer ${OPTISIGNS_API_KEY}" \
-              --header "Content-Type: application/json" \
-              --data @graphql-request.json \
-              "https://graphql-gateway.optisigns.com/graphql"
-          )"
+              if (error?.response?.data) {
+                console.error(
+                  "Response:",
+                  JSON.stringify(error.response.data, null, 2)
+                );
+              }
 
-          echo "HTTP status: $HTTP_STATUS"
-          jq . graphql-response.json
+              console.error(error);
+              process.exit(1);
+            }
+          }
 
-          if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
-            echo "OptiSigns returned a non-success HTTP status."
-            exit 1
-          fi
+          main();
+          EOF
 
-          if jq -e '.errors and (.errors | length > 0)' graphql-response.json > /dev/null; then
-            echo "OptiSigns returned GraphQL errors."
-            exit 1
-          fi
-
-          UPDATED_ID="$(jq -r '.data.saveAsset._id // empty' graphql-response.json)"
-
-          if [[ "$UPDATED_ID" != "$OPTISIGNS_ASSET_ID" ]]; then
-            echo "OptiSigns did not return the expected asset ID."
-            exit 1
-          fi
-
-          echo "OptiSigns asset updated successfully."
+          node upload.cjs
