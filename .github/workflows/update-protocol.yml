@@ -2,62 +2,97 @@ name: Update Weekly Protocol
 
 on:
   schedule:
-    # GitHub schedules use UTC.
-    # Running at both times handles Eastern Standard and Daylight Time.
+    # Midnight Eastern is either 4:00 or 5:00 UTC,
+    # depending on daylight-saving time.
     - cron: "0 4 * * 0"
     - cron: "0 5 * * 0"
 
-  # Allows you to test it manually.
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: weekly-protocol-update
+  cancel-in-progress: false
 
 jobs:
   update-protocol:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Confirm Eastern midnight
-        if: github.event_name == 'schedule'
+      - name: Determine whether update should run
+        id: timing
+        shell: bash
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual run requested."
+            exit 0
+          fi
+
           EASTERN_DAY=$(TZ=America/New_York date +%u)
           EASTERN_HOUR=$(TZ=America/New_York date +%H)
 
           echo "Eastern day: $EASTERN_DAY"
           echo "Eastern hour: $EASTERN_HOUR"
 
-          if [ "$EASTERN_DAY" != "7" ] || [ "$EASTERN_HOUR" != "00" ]; then
-            echo "This is not Sunday at midnight Eastern."
-            exit 1
+          if [ "$EASTERN_DAY" = "7" ] && [ "$EASTERN_HOUR" = "00" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "It is Sunday at midnight Eastern."
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "No update needed during this UTC run."
           fi
 
       - name: Check out repository
+        if: steps.timing.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       - name: Download latest protocol
+        if: steps.timing.outputs.should_run == 'true'
+        shell: bash
         run: |
-          curl --location \
+          curl \
+            --location \
             --fail \
-            --retry 3 \
+            --silent \
+            --show-error \
+            --retry 5 \
+            --retry-delay 10 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 180 \
             --output weekly-protocol-new.jpeg \
             "https://burnbootcamp.widen.net/content/jkjvgcxsin/jpeg/Screencloud%20Protocol.jpeg?position=c&color=ffffffff&quality=80&u=nby9s5"
 
       - name: Validate downloaded image
+        if: steps.timing.outputs.should_run == 'true'
+        shell: bash
         run: |
           FILE_TYPE=$(file --brief --mime-type weekly-protocol-new.jpeg)
+          FILE_SIZE=$(stat --format=%s weekly-protocol-new.jpeg)
+
           echo "Downloaded file type: $FILE_TYPE"
+          echo "Downloaded file size: $FILE_SIZE bytes"
 
           if [[ "$FILE_TYPE" != image/* ]]; then
-            echo "Downloaded file is not an image."
+            echo "The downloaded file is not an image."
+            exit 1
+          fi
+
+          if [ "$FILE_SIZE" -lt 50000 ]; then
+            echo "The downloaded image is unexpectedly small."
             exit 1
           fi
 
       - name: Replace protocol image
-        run: |
-          mv weekly-protocol-new.jpeg weekly-protocol.jpeg
+        if: steps.timing.outputs.should_run == 'true'
+        run: mv weekly-protocol-new.jpeg weekly-protocol.jpeg
 
       - name: Commit updated image
+        if: steps.timing.outputs.should_run == 'true'
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
