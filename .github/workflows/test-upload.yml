@@ -1,46 +1,66 @@
-- name: Upload test image
-  env:
-    OPTISIGNS_API_KEY: ${{ secrets.OPTISIGNS_API_KEY }}
-  run: |
-    cat > upload.mjs <<'EOF'
-    import { OptiSigns } from "@optisigns/optisigns";
+name: Test OptiSigns Upload
 
-    const token = process.env.OPTISIGNS_API_KEY;
+on:
+  workflow_dispatch:
 
-    if (!token) {
-      throw new Error("OPTISIGNS_API_KEY secret is missing");
-    }
+jobs:
+  test-upload:
+    runs-on: ubuntu-latest
 
-    const client = new OptiSigns({
-      token
-    });
+    steps:
+      - uses: actions/checkout@v4
 
-    try {
-      const asset = await client.assets.uploadFileAsset(
-        "./test-image.png",
-        "1"
-      );
+      - name: Create test image
+        run: |
+          curl -L \
+            "https://dummyimage.com/1280x720/222222/ffffff.png&text=OptiSigns+Upload+Test" \
+            -o test-image.png
 
-      console.log("UPLOAD SUCCESSFUL");
-      console.log(JSON.stringify(asset, null, 2));
-    } catch (error) {
-      console.error("UPLOAD FAILED");
-      console.error("Message:", error?.message);
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      if (error?.response?.data) {
-        console.error(
-          "Response:",
-          JSON.stringify(error.response.data, null, 2)
-        );
-      }
+      - name: Install SDK
+        run: npm install @optisigns/optisigns
 
-      if (error?.response?.status) {
-        console.error("HTTP status:", error.response.status);
-      }
+      - name: Upload image
+        env:
+          OPTISIGNS_API_KEY: ${{ secrets.OPTISIGNS_API_KEY }}
+        run: |
+          cat > upload.mjs <<'EOF'
+          import { OptiSigns } from "@optisigns/optisigns";
 
-      console.error(error);
-      process.exit(1);
-    }
-    EOF
+          const token = process.env.OPTISIGNS_API_KEY;
 
-    node upload.mjs
+          console.log("Token exists:", !!token);
+
+          const client = new OptiSigns({
+            token
+          });
+
+          try {
+
+            const asset = await client.assets.uploadFileAsset(
+              "./test-image.png",
+              "1"
+            );
+
+            console.log("SUCCESS");
+            console.log(JSON.stringify(asset,null,2));
+
+          } catch(err) {
+
+            console.error(err);
+
+            if(err.response){
+              console.error(err.response.status);
+              console.error(JSON.stringify(err.response.data,null,2));
+            }
+
+            process.exit(1);
+          }
+
+          EOF
+
+          node upload.mjs
