@@ -32,8 +32,13 @@
 
 <body>
   <img
-    src="weekly-protocol.jpeg"
+    id="protocol-image"
     alt="Weekly Protocol"
   >
+
+  <script>
+    document.getElementById("protocol-image").src =
+      "weekly-protocol.jpeg?v=" + Date.now();
+  </script>
 </body>
 </html>
